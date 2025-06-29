@@ -1,4 +1,4 @@
-# streamlit_ff_heatmap.py
+# streamlit_ff_heatmap_updated.py
 
 import streamlit as st
 import requests
@@ -13,7 +13,8 @@ import plotly.graph_objects as go
 DB_NAME = "ff_calendar.db"
 conn = sqlite3.connect(DB_NAME, check_same_thread=False)
 cursor = conn.cursor()
-cursor.execute("""CREATE TABLE IF NOT EXISTS ff_calendar_data (
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS ff_calendar_data (
     date TEXT,
     currency TEXT,
     indicator TEXT,
@@ -23,11 +24,21 @@ cursor.execute("""CREATE TABLE IF NOT EXISTS ff_calendar_data (
     surprise REAL,
     bias TEXT,
     PRIMARY KEY(date, currency, indicator)
-)""")
+)
+""")
 conn.commit()
 
 # --- Currencies to include ---
 CURRENCIES = ["USD", "EUR", "GBP", "JPY", "AUD", "CAD"]
+
+# --- Indicators to track ---
+ALLOWED_INDICATORS = [
+    "GDP Growth QoQ", "Manufacturing PMI", "Services PMI",
+    "Retail Sales MoM", "CPI YoY", "PPI YoY", "PCE YoY",
+    "Wage Growth YoY", "Unemployment Rate",
+    "Initial Jobless Claims", "JOLTS Job Openings",
+    "ADP Employment", "Non-Farm Payroll", "House Price Index"
+]
 
 # --- Scraping function ---
 def scrape_ff(currency):
@@ -48,6 +59,9 @@ def scrape_ff(currency):
             if curr != currency:
                 continue
             indicator = tds[3].get_text(strip=True)
+            # Only include allowed indicators
+            if not any(sub in indicator for sub in ALLOWED_INDICATORS):
+                continue
             actual = tds[4].get_text(strip=True)
             forecast = tds[5].get_text(strip=True)
             previous = tds[6].get_text(strip=True)
@@ -64,7 +78,7 @@ def scrape_ff(currency):
             surprise = act - fore if not np.isnan(act) and not np.isnan(fore) else np.nan
 
             # Bias logic: negative indicators
-            if "Unemployment" in indicator or "Jobless" in indicator:
+            if any(key in indicator for key in ["Unemployment", "Jobless"]):
                 bias = "Bearish" if surprise > 0 else "Bullish" if surprise < 0 else "Neutral"
             else:
                 bias = "Bullish" if surprise > 0 else "Bearish" if surprise < 0 else "Neutral"
@@ -81,7 +95,7 @@ def scrape_ff(currency):
             })
     return pd.DataFrame(rows)
 
-# --- Load from DB or scrape ---
+# --- Load from DB or scrape daily ---
 def load_or_scrape(currency):
     today = datetime.date.today().isoformat()
     df = pd.read_sql_query(
@@ -111,8 +125,12 @@ if df.empty:
     st.warning("No data available for today.")
 else:
     st.subheader(f"{currency} Economic Calendar — {df['date'].iloc[0]}")
-    df_display = df.rename(columns={"date": "Release Date"})
-    st.dataframe(df_display[["indicator", "Release Date", "actual", "forecast", "previous", "surprise", "bias"]])
+    df_display = df.rename(columns={"date": "Release Date",
+                                    "actual": "Actual", "forecast": "Forecast",
+                                    "previous": "Previous", "surprise": "Surprise",
+                                    "bias": "Bias"})
+    st.dataframe(df_display[["indicator", "Release Date", "Actual", "Forecast",
+                             "Previous", "Surprise", "Bias"]])
 
     # Gauge chart for overall bias
     counts = df["bias"].value_counts()
@@ -126,20 +144,17 @@ else:
         mode="gauge+number",
         value=pct_bullish,
         title={"text": f"{currency} Overall Bias: {overall}"},
-        gauge={
-            "axis": {"range": [0, 100]},
-            "bar": {"color": "#4CAF50" if overall == "Bullish" else "#F44336"},
-            "steps": [
-                {"range": [0, 40], "color": "#F44336"},
-                {"range": [40, 60], "color": "#FFC107"},
-                {"range": [60, 100], "color": "#4CAF50"}
-            ]
-        }
+        gauge={"axis": {"range": [0, 100]},
+               "bar": {"color": "#4CAF50" if overall == "Bullish" else "#F44336"},
+               "steps": [{"range": [0, 40], "color": "#F44336"},
+                         {"range": [40, 60], "color": "#FFC107"},
+                         {"range": [60, 100], "color": "#4CAF50"}]}
     ))
     st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Bias Explanations")
     for _, row in df.iterrows():
-        st.markdown(f"- **{row['indicator']}** — Actual {row['actual']} vs Forecast {row['forecast']} → Surprise {row['surprise']} → **{row['bias']}**")
+        st.markdown(f"- **{row['indicator']}** — Actual {row['actual']} vs "
+                    f"Forecast {row['forecast']} → Surprise {row['surprise']} → **{row['bias']}**")
 
 conn.close()
