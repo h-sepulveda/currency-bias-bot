@@ -1,124 +1,91 @@
-# economic_heatmap.py
-import requests
-from bs4 import BeautifulSoup
+# Streamlit Economic Heatmap with Full US Data + Bias Logic
+
+import streamlit as st
 import pandas as pd
 import numpy as np
-import streamlit as st
 import plotly.graph_objects as go
 import datetime
-import sqlite3
 
-# --- Setup ---
-DB_NAME = "macro_snapshots.db"
-conn = sqlite3.connect(DB_NAME)
-c = conn.cursor()
-c.execute("""
-    CREATE TABLE IF NOT EXISTS calendar_data (
-        currency TEXT,
-        date TEXT,
-        indicator TEXT,
-        actual TEXT,
-        forecast TEXT,
-        previous TEXT,
-        surprise REAL,
-        impact TEXT
-    )
-""")
-conn.commit()
-
-# --- Currencies ---
-CURRENCIES = {"USD": "US Dollar", "EUR": "Euro", "JPY": "Japanese Yen"}
-
-# --- Scraper ---
-def scrape_calendar(currency="USD"):
-    url = "https://www.investing.com/economic-calendar/"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    r = requests.get(url, headers=headers)
-    soup = BeautifulSoup(r.text, 'html.parser')
-    table = soup.find("table", {"id": "economicCalendarData"})
-    rows = []
-
-    if table:
-        for row in table.tbody.find_all("tr", {"data-eventid": True}):
-            tds = row.find_all("td")
-            if not tds or tds[2].get_text(strip=True) != currency:
-                continue
-            try:
-                ind = tds[3].get_text(strip=True)
-                actual = tds[4].get_text(strip=True)
-                forecast = tds[5].get_text(strip=True)
-                previous = tds[6].get_text(strip=True)
-
-                def to_num(x):
-                    try: return float(x.replace('%','').replace('K','').replace(',',''))
-                    except: return np.nan
-
-                act_f = to_num(actual)
-                for_f = to_num(forecast)
-                surprise = act_f - for_f if not np.isnan(act_f) and not np.isnan(for_f) else np.nan
-                impact = "Bullish" if surprise > 0 else "Bearish" if surprise < 0 else "Neutral"
-
-                rows.append({
-                    "currency": currency,
-                    "date": str(datetime.date.today()),
-                    "indicator": ind,
-                    "actual": actual,
-                    "forecast": forecast,
-                    "previous": previous,
-                    "surprise": round(surprise, 2) if not np.isnan(surprise) else '',
-                    "impact": impact
-                })
-            except:
-                continue
-    return pd.DataFrame(rows)
-
-# --- Get or fallback ---
-def load_or_scrape(currency):
-    today = str(datetime.date.today())
-    df = scrape_calendar(currency)
-    if not df.empty:
-        for _, row in df.iterrows():
-            c.execute("""
-                INSERT INTO calendar_data (currency, date, indicator, actual, forecast, previous, surprise, impact)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (row["currency"], row["date"], row["indicator"], row["actual"], row["forecast"], row["previous"], row["surprise"], row["impact"]))
-        conn.commit()
-    else:
-        df = pd.read_sql_query("SELECT * FROM calendar_data WHERE currency=? ORDER BY date DESC LIMIT 15", conn, params=(currency,))
-    return df
-
-# --- Streamlit App ---
 st.set_page_config(layout="wide")
-st.title("🌐 Multi-Currency Economic Heatmap (Live + Fallback)")
+st.title("🇺🇸 US Economic Heatmap - Multi Indicator Bias Tracker")
 
-selected = st.selectbox("Select Currency", list(CURRENCIES.keys()), format_func=lambda x: f"{x} - {CURRENCIES[x]}")
-df = load_or_scrape(selected)
+# --- Sample Realistic Placeholder Data (Live source can be added later) ---
+data = [
+    ["GDP Growth QoQ", -0.5, -0.2, 2.4],
+    ["Manufacturing PMIs", 48.5, 49.3, 48.7],
+    ["Services PMIs", 49.9, 52, 51.6],
+    ["Retail Sales MoM", -0.9, -0.5, 0.1],
+    ["CPI YoY", 2.4, 2.5, 2.3],
+    ["PPI YOY", 2.5, 2.5, 2.6],
+    ["PCE YOY", 2.7, 2.6, 2.5],
+    ["Wage Growth YoY", 3.9, 2.6, 3.9],
+    ["Unemployment Rate", 4.2, 4.2, 4.2],
+    ["US Initial Jobless Claims", 236000, 245000, 246000],
+    ["JOLTS Job Openings", 7.39, 7.11, 7.2],
+    ["ADP", 37000, 111000, 62000],
+    ["Non-Farm Payroll", 139000, 130000, 147000],
+    ["House Price Index", 434.9, None, 436.7],
+    ["US MBA Mortgage", 1.1, None, -2.6]
+]
 
-if df.empty:
-    st.warning("No data available.")
+df = pd.DataFrame(data, columns=["Indicator", "Actual", "Forecast", "Previous"])
+
+def evaluate_bias(row):
+    try:
+        actual = float(row["Actual"])
+        forecast = float(row["Forecast"])
+    except:
+        return "Neutral", "No clear comparison"
+
+    diff = actual - forecast
+    direction = "Bullish" if diff > 0 else "Bearish" if diff < 0 else "Neutral"
+
+    reasoning = f"Actual: {actual}, Forecast: {forecast}, Surprise: {diff:+.2f} → {direction}"
+    return direction, reasoning
+
+df[["Bias", "Explanation"]] = df.apply(lambda row: pd.Series(evaluate_bias(row)), axis=1)
+
+# --- Display Table ---
+st.subheader("US Economic Indicators")
+st.dataframe(df[["Indicator", "Actual", "Forecast", "Previous", "Bias"]])
+
+# --- Indicator Explanations ---
+st.subheader("🧠 Explanation Per Indicator")
+for _, row in df.iterrows():
+    st.markdown(f"**{row['Indicator']}** → {row['Explanation']}")
+
+# --- Overall Bias Summary ---
+bullish_count = (df['Bias'] == 'Bullish').sum()
+bearish_count = (df['Bias'] == 'Bearish').sum()
+total_count = bullish_count + bearish_count
+
+if total_count == 0:
+    final_bias = "Neutral"
 else:
-    st.subheader(f"Economic Calendar: {CURRENCIES[selected]}")
-    st.dataframe(df[['indicator','actual','forecast','previous','surprise','impact']])
+    final_bias = "Bullish" if bullish_count > bearish_count else "Bearish"
 
-    counts = df['impact'].value_counts()
-    pct = counts.get('Bullish', 0) / len(df) * 100
+score = round((bullish_count - bearish_count) / len(df) * 100, 2)
 
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=pct,
-        title={'text': f"{selected} Bullish %"},
-        gauge={'axis': {'range': [0, 100]},
-               'bar': {'color': "#4a90e2"},
-               'steps': [
-                   {'range': [0, 40], 'color': "#d0021b"},
-                   {'range': [40, 60], 'color': "#9b9b9b"},
-                   {'range': [60, 100], 'color': "#4a90e2"}
-               ]}
-    ))
-    st.plotly_chart(fig, use_container_width=True)
+st.markdown(f"### ⚖️ Overall Market Bias: **{final_bias}**")
+st.markdown(f"- **Bullish Signals:** {bullish_count}")
+st.markdown(f"- **Bearish Signals:** {bearish_count}")
+st.markdown(f"- **Score:** {score:+.2f} → Overall sentiment **{final_bias}**")
 
-    st.subheader("Bias Explanations")
-    for _, row in df.iterrows():
-        st.markdown(f"- **{row['indicator']}**: Actual {row['actual']} vs Forecast {row['forecast']} → Surprise {row['surprise']} → **{row['impact']}**")
+# --- Bias Gauge ---
+gauge_value = max(min((bullish_count / len(df)) * 100, 100), 0)
+fig = go.Figure(go.Indicator(
+    mode="gauge+number",
+    value=gauge_value,
+    title={'text': "Bullish % Score"},
+    gauge={
+        'axis': {'range': [0, 100]},
+        'bar': {'color': "#4a90e2"},
+        'steps': [
+            {'range': [0, 40], 'color': "#d0021b"},
+            {'range': [40, 60], 'color': "#9b9b9b"},
+            {'range': [60, 100], 'color': "#4a90e2"}
+        ]
+    }
+))
+st.plotly_chart(fig, use_container_width=True)
 
-conn.close()
