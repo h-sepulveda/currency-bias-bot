@@ -1,4 +1,4 @@
-# Streamlit Live Economic Heatmap & Bias Tracker (Final Updates)
+# Streamlit Live Economic Heatmap & Bias Tracker (Fixed Indentation)
 
 import requests
 from bs4 import BeautifulSoup
@@ -74,14 +74,19 @@ st.set_page_config(layout="wide")
 st.title("🌐 Live Economic Heatmap & Bias Tracker")
 
 # Region selection
-region = st.selectbox("Select Region/Currency:", list(REGIONS.keys()), format_func=lambda x: f"{x} ({REGIONS[x]})")
+region = st.selectbox(
+    "Select Region/Currency:",
+    list(REGIONS.keys()),
+    format_func=lambda x: f"{x} ({REGIONS[x]})"
+)
 
 # Fetch live data
 df_live = get_live_events()
 st.subheader("📅 Today's Economic Calendar")
 
-# Function to display fallback most recent data
- def show_recent_from_db():
+# Fallback to show most recent stored data
+
+def show_recent_from_db():
     hist_all = pd.read_sql_query(
         "SELECT * FROM macro_data WHERE region=? ORDER BY date DESC", conn,
         params=(region,)
@@ -95,11 +100,14 @@ st.subheader("📅 Today's Economic Calendar")
     st.subheader(f"Most Recent Data ({latest_date})")
     st.dataframe(recent[['indicator','actual','forecast','previous','surprise','bias']])
     counts = recent['bias'].value_counts()
-    overall = ('Bullish' if counts.get('Bullish',0) > counts.get('Bearish',0)
-               else 'Bearish' if counts.get('Bearish',0) > counts.get('Bullish',0)
-               else 'Neutral')
+    overall = (
+        'Bullish' if counts.get('Bullish',0) > counts.get('Bearish',0)
+        else 'Bearish' if counts.get('Bearish',0) > counts.get('Bullish',0)
+        else 'Neutral'
+    )
     st.markdown(f"## ⚖️ Overall Market Bias: **{overall}**")
 
+# Display live or fallback data
 if df_live.empty:
     st.info("No live economic events could be fetched at this time. Showing most recent stored data.")
     show_recent_from_db()
@@ -112,16 +120,23 @@ else:
         st.dataframe(sub[['indicator','actual','forecast','previous','surprise','bias']])
         st.markdown("### 🧠 Event Bias Explanations")
         for _, r in sub.iterrows():
-            st.markdown(f"- **{r['indicator']}**: Actual {r['actual']} vs Forecast {r['forecast']} → Surprise {r['surprise']} → **{r['bias']}**")
+            st.markdown(
+                f"- **{r['indicator']}**: Actual {r['actual']} vs Forecast {r['forecast']} "
+                f"→ Surprise {r['surprise']} → **{r['bias']}**"
+            )
         counts = sub['bias'].value_counts()
-        overall = ('Bullish' if counts.get('Bullish',0) > counts.get('Bearish',0)
-                   else 'Bearish' if counts.get('Bearish',0) > counts.get('Bullish',0)
-                   else 'Neutral')
+        overall = (
+            'Bullish' if counts.get('Bullish',0) > counts.get('Bearish',0)
+            else 'Bearish' if counts.get('Bearish',0) > counts.get('Bullish',0)
+            else 'Neutral'
+        )
         st.markdown(f"## ⚖️ Overall Market Bias: **{overall}**")
         for _, r in sub.iterrows():
             c.execute(
-                "INSERT INTO macro_data VALUES (?,?,?,?,?,?,?,?)",
-                (region, r['indicator'], r['date'], r['actual'], r['forecast'], r['previous'], r['surprise'], r['bias'])
+                "INSERT INTO macro_data VALUES (?,?,?,?,?,?,?,?)",(
+                    region, r['indicator'], r['date'], r['actual'], r['forecast'],
+                    r['previous'], r['surprise'], r['bias']
+                )
             )
         conn.commit()
 
@@ -153,8 +168,8 @@ st.dataframe(filtered)
 st.markdown("### 📊 Bullish Bias % Over Time")
 time_df = (
     hist.groupby(hist['date'].dt.date)['surprise']
-        .apply(lambda s: (s>0).sum()/len(s)*100)
-        .reset_index(name='bullish_pct')
+    .apply(lambda s: (s > 0).sum() / len(s) * 100)
+    .reset_index(name='bullish_pct')
 )
 fig_line = px.line(time_df, x='date', y='bullish_pct', title='Bullish Bias % Over Time')
 st.plotly_chart(fig_line, use_container_width=True)
