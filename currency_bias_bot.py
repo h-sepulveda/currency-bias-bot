@@ -1,5 +1,4 @@
-# Streamlit US Economic Heatmap (Live Data from Investing.com)
-
+# economic_heatmap.py
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -7,92 +6,119 @@ import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
 import datetime
+import sqlite3
 
-st.set_page_config(layout="wide", page_title="US Economic Heatmap")
-st.title("🇺🇸 US Economic Heatmap | Live Data")
+# --- Setup ---
+DB_NAME = "macro_snapshots.db"
+conn = sqlite3.connect(DB_NAME)
+c = conn.cursor()
+c.execute("""
+    CREATE TABLE IF NOT EXISTS calendar_data (
+        currency TEXT,
+        date TEXT,
+        indicator TEXT,
+        actual TEXT,
+        forecast TEXT,
+        previous TEXT,
+        surprise REAL,
+        impact TEXT
+    )
+""")
+conn.commit()
 
-# --- FUNCTIONS ---
-def fetch_us_calendar():
-    """
-    Scrape Investing.com US economic calendar for today and returns DataFrame with actual, forecast, previous.
-    """
-    url = 'https://www.investing.com/economic-calendar/'
+# --- Currencies ---
+CURRENCIES = {"USD": "US Dollar", "EUR": "Euro", "JPY": "Japanese Yen"}
+
+# --- Scraper ---
+def scrape_calendar(currency="USD"):
+    url = "https://www.investing.com/economic-calendar/"
     headers = {'User-Agent': 'Mozilla/5.0'}
-    resp = requests.get(url, headers=headers)
-    soup = BeautifulSoup(resp.text, 'html.parser')
-    table = soup.find('table', {'id':'economicCalendarData'})
+    r = requests.get(url, headers=headers)
+    soup = BeautifulSoup(r.text, 'html.parser')
+    table = soup.find("table", {"id": "economicCalendarData"})
     rows = []
-    today = datetime.date.today().strftime('%b %d, %y')
-    if table and table.tbody:
-        for tr in table.tbody.find_all('tr', attrs={'data-eventid': True}):
-            tds = tr.find_all('td')
-            region = tds[2].get_text(strip=True)
-            if region != 'USD':
+
+    if table:
+        for row in table.tbody.find_all("tr", {"data-eventid": True}):
+            tds = row.find_all("td")
+            if not tds or tds[2].get_text(strip=True) != currency:
                 continue
-            indicator = tds[3].get_text(strip=True)
-            date = tds[1].get_text(strip=True)
-            actual = tds[4].get_text(strip=True) or np.nan
-            forecast = tds[5].get_text(strip=True) or np.nan
-            previous = tds[6].get_text(strip=True) or np.nan
-            # convert values
-            def to_num(x):
-                try:
-                    return float(x.replace('%','').replace('K','').replace(',',''))
-                except:
-                    return np.nan
-            actual_n = to_num(actual)
-            forecast_n = to_num(forecast)
-            previous_n = to_num(previous)
-            surprise = actual_n - forecast_n if not np.isnan(actual_n) and not np.isnan(forecast_n) else np.nan
-            usd_impact = 'Bullish' if surprise>0 else 'Bearish' if surprise<0 else 'Neutral'
-            stocks_impact = usd_impact
-            rows.append({
-                'Indicator': indicator,
-                'Date': date,
-                'Surprise': f"{surprise:+.2f}" if not np.isnan(surprise) else '',
-                'Actual': actual,
-                'Forecast': forecast,
-                'Previous': previous,
-                'USD Impact': usd_impact,
-                'Stocks Impact': stocks_impact
-            })
+            try:
+                ind = tds[3].get_text(strip=True)
+                actual = tds[4].get_text(strip=True)
+                forecast = tds[5].get_text(strip=True)
+                previous = tds[6].get_text(strip=True)
+
+                def to_num(x):
+                    try: return float(x.replace('%','').replace('K','').replace(',',''))
+                    except: return np.nan
+
+                act_f = to_num(actual)
+                for_f = to_num(forecast)
+                surprise = act_f - for_f if not np.isnan(act_f) and not np.isnan(for_f) else np.nan
+                impact = "Bullish" if surprise > 0 else "Bearish" if surprise < 0 else "Neutral"
+
+                rows.append({
+                    "currency": currency,
+                    "date": str(datetime.date.today()),
+                    "indicator": ind,
+                    "actual": actual,
+                    "forecast": forecast,
+                    "previous": previous,
+                    "surprise": round(surprise, 2) if not np.isnan(surprise) else '',
+                    "impact": impact
+                })
+            except:
+                continue
     return pd.DataFrame(rows)
 
-# Fetch and display
-df = fetch_us_calendar()
-st.subheader("US Economic Calendar Today")
-if df.empty:
-    st.warning("No USD events found or unable to fetch data.")
-else:
-    # style impact columns
-    def color_map(val):
-        if val=='Bullish': return 'background-color: #4a90e2; color:white'
-        if val=='Bearish': return 'background-color: #d0021b; color:white'
-        return ''
-    styled = df.style.applymap(color_map, subset=['USD Impact','Stocks Impact'])
-    st.dataframe(styled, use_container_width=True)
+# --- Get or fallback ---
+def load_or_scrape(currency):
+    today = str(datetime.date.today())
+    df = scrape_calendar(currency)
+    if not df.empty:
+        for _, row in df.iterrows():
+            c.execute("""
+                INSERT INTO calendar_data (currency, date, indicator, actual, forecast, previous, surprise, impact)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (row["currency"], row["date"], row["indicator"], row["actual"], row["forecast"], row["previous"], row["surprise"], row["impact"]))
+        conn.commit()
+    else:
+        df = pd.read_sql_query("SELECT * FROM calendar_data WHERE currency=? ORDER BY date DESC LIMIT 15", conn, params=(currency,))
+    return df
 
-    # Overall bias gauge
-    counts = df['USD Impact'].value_counts()
-    pct = counts.get('Bullish',0)/len(df)*100
+# --- Streamlit App ---
+st.set_page_config(layout="wide")
+st.title("🌐 Multi-Currency Economic Heatmap (Live + Fallback)")
+
+selected = st.selectbox("Select Currency", list(CURRENCIES.keys()), format_func=lambda x: f"{x} - {CURRENCIES[x]}")
+df = load_or_scrape(selected)
+
+if df.empty:
+    st.warning("No data available.")
+else:
+    st.subheader(f"Economic Calendar: {CURRENCIES[selected]}")
+    st.dataframe(df[['indicator','actual','forecast','previous','surprise','impact']])
+
+    counts = df['impact'].value_counts()
+    pct = counts.get('Bullish', 0) / len(df) * 100
+
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=pct,
-        title={'text':'USD Bullish %'},
-        gauge={'axis':{'range':[0,100]},
-               'bar':{'color':'#4a90e2'},
-               'steps':[
-                   {'range':[0,40],'color':'#d0021b'},
-                   {'range':[40,60],'color':'#9b9b9b'},
-                   {'range':[60,100],'color':'#4a90e2'}
+        title={'text': f"{selected} Bullish %"},
+        gauge={'axis': {'range': [0, 100]},
+               'bar': {'color': "#4a90e2"},
+               'steps': [
+                   {'range': [0, 40], 'color': "#d0021b"},
+                   {'range': [40, 60], 'color': "#9b9b9b"},
+                   {'range': [60, 100], 'color': "#4a90e2"}
                ]}
     ))
-    st.subheader("Overall USD Bias")
     st.plotly_chart(fig, use_container_width=True)
 
-    # Explanations
-    st.subheader("Event Bias Explanations")
-    for _, r in df.iterrows():
-        st.markdown(f"- **{r['Indicator']}**: Surprise {r['Surprise']} → **{r['USD Impact']}**")
+    st.subheader("Bias Explanations")
+    for _, row in df.iterrows():
+        st.markdown(f"- **{row['indicator']}**: Actual {row['actual']} vs Forecast {row['forecast']} → Surprise {row['surprise']} → **{row['impact']}**")
 
-# End
+conn.close()
