@@ -1,117 +1,67 @@
-# streamlit_live_heatmap.py
+# streamlit_combined_heatmap.py
 
 import streamlit as st
 import pandas as pd
-import numpy as np
-import requests
 import plotly.graph_objects as go
-import datetime
-import sqlite3
 
-# --- Currency-country mapping ---
-COUNTRIES = {
-    "USD": "USA",
-    "EUR": "EMU",  # Euro Area
-    "JPY": "JPN",
-    "GBP": "GBR",
-    "AUD": "AUS",
-    "CAD": "CAN"
-}
+# Placeholder DataFrame simulating merged data (World Bank + Forex Factory)
+data = [
+    {"Indicator": "GDP Growth QoQ", "Actual": 2.4, "Forecast": 2.0, "Previous": 2.1, "Release Date": "2024-12-22"},
+    {"Indicator": "Manufacturing PMI", "Actual": 49.5, "Forecast": 50.0, "Previous": 50.2, "Release Date": "2024-12-21"},
+    {"Indicator": "Services PMI", "Actual": 52.0, "Forecast": 51.0, "Previous": 50.9, "Release Date": "2024-12-20"},
+    {"Indicator": "Retail Sales MoM", "Actual": 0.6, "Forecast": 0.3, "Previous": 0.4, "Release Date": "2024-12-19"},
+    {"Indicator": "CPI YoY", "Actual": 3.2, "Forecast": 3.3, "Previous": 3.4, "Release Date": "2024-12-18"},
+    {"Indicator": "PPI YoY", "Actual": 2.6, "Forecast": 2.5, "Previous": 2.7, "Release Date": "2024-12-17"},
+    {"Indicator": "PCE YoY", "Actual": 3.4, "Forecast": 3.4, "Previous": 3.5, "Release Date": "2024-12-16"},
+    {"Indicator": "Wage Growth YoY", "Actual": 4.1, "Forecast": 4.0, "Previous": 4.2, "Release Date": "2024-12-15"},
+    {"Indicator": "Unemployment Rate", "Actual": 3.8, "Forecast": 3.7, "Previous": 3.7, "Release Date": "2024-12-14"},
+    {"Indicator": "US Initial Jobless Claims", "Actual": 242, "Forecast": 220, "Previous": 230, "Release Date": "2024-12-13"},
+    {"Indicator": "JOLTS Job Openings", "Actual": 9.3, "Forecast": 8.8, "Previous": 8.9, "Release Date": "2024-12-12"},
+    {"Indicator": "ADP Employment", "Actual": 180, "Forecast": 160, "Previous": 165, "Release Date": "2024-12-11"},
+    {"Indicator": "Non-Farm Payroll", "Actual": 215, "Forecast": 190, "Previous": 200, "Release Date": "2024-12-10"},
+]
 
-# --- Indicators and World Bank codes ---
-INDICATORS = {
-    "GDP Growth (%)": "NY.GDP.MKTP.KD.ZG",
-    "Inflation (CPI YoY)": "FP.CPI.TOTL.ZG",
-    "Unemployment Rate": "SL.UEM.TOTL.ZS",
-    "Lending Interest Rate": "FR.INR.LEND"
-}
+df = pd.DataFrame(data)
 
-# --- Database setup ---
-DB_NAME = "macro_live_snapshots.db"
-conn = sqlite3.connect(DB_NAME)
-c = conn.cursor()
-c.execute("""
-CREATE TABLE IF NOT EXISTS data (
-    date TEXT,
-    currency TEXT,
-    indicator TEXT,
-    value REAL,
-    PRIMARY KEY (date, currency, indicator)
-)
-""")
-conn.commit()
-
-# --- Fetch from World Bank API ---
-def fetch_world_bank_data(indicator_code, country_code):
-    url = f"http://api.worldbank.org/v2/country/{country_code}/indicator/{indicator_code}?format=json&per_page=100"
-    response = requests.get(url)
-    if response.status_code == 200:
-        data = response.json()
-        if isinstance(data, list) and len(data) > 1:
-            for entry in data[1]:
-                if entry["value"] is not None:
-                    return entry["value"], entry["date"]
-    return None, None
-
-# --- Load or fetch data ---
-def get_data(currency):
-    today = datetime.date.today().isoformat()
-    stored = pd.read_sql_query("SELECT * FROM data WHERE date = ? AND currency = ?", conn, params=(today, currency))
-    if stored.empty:
-        rows = []
-        for label, code in INDICATORS.items():
-            val, year = fetch_world_bank_data(code, COUNTRIES[currency])
-            if val is not None:
-                rows.append((today, currency, label, val))
-        df = pd.DataFrame(rows, columns=["date", "currency", "indicator", "value"])
-        df.to_sql("data", conn, if_exists="append", index=False)
-        return df
+# Define logic to assign bias and reasoning
+def assess_bias(row):
+    if row["Indicator"] in ["Unemployment Rate", "US Initial Jobless Claims"]:
+        bias = "Bearish" if row["Actual"] > row["Forecast"] else "Bullish" if row["Actual"] < row["Forecast"] else "Neutral"
     else:
-        return stored
+        bias = "Bullish" if row["Actual"] > row["Forecast"] else "Bearish" if row["Actual"] < row["Forecast"] else "Neutral"
+    reason = f"Actual: {row['Actual']} vs Forecast: {row['Forecast']} → {bias}"
+    return pd.Series([bias, reason])
 
-# --- Streamlit UI ---
-st.set_page_config(page_title="Live Economic Heatmap", layout="wide")
-st.title("📊 Live Economic Heatmap (World Bank API)")
+df[["Bias", "Reason"]] = df.apply(assess_bias, axis=1)
 
-currency = st.selectbox("Select Currency", list(COUNTRIES.keys()))
-df = get_data(currency)
+# App layout
+st.set_page_config(page_title="Combined Economic Heatmap", layout="wide")
+st.title("🌐 Combined Economic Heatmap (World Bank + Forex Factory)")
 
-if not df.empty:
-    st.subheader(f"{currency} Macroeconomic Overview")
-    df_display = df.copy()
-    df_display["Bias"] = df_display.apply(lambda row: (
-        "Bullish" if (
-            (row["indicator"] in ["GDP Growth (%)", "Lending Interest Rate"] and row["value"] > 0) or
-            (row["indicator"] == "Inflation (CPI YoY)" and row["value"] < 4) or
-            (row["indicator"] == "Unemployment Rate" and row["value"] < 5)
-        ) else "Bearish"
-    ), axis=1)
+st.dataframe(df[["Indicator", "Actual", "Forecast", "Previous", "Release Date", "Bias", "Reason"]])
 
-    st.dataframe(df_display[["indicator", "value", "Bias"]])
+# Scoring summary
+bullish = (df["Bias"] == "Bullish").sum()
+bearish = (df["Bias"] == "Bearish").sum()
+total = bullish + bearish
+bullish_pct = (bullish / total) * 100 if total > 0 else 0
+final_score = "Bullish" if bullish_pct > 60 else "Bearish" if bullish_pct < 40 else "Neutral"
 
-    bullish = (df_display["Bias"] == "Bullish").sum()
-    bearish = (df_display["Bias"] == "Bearish").sum()
-    total = bullish + bearish
-    pct = (bullish / total * 100) if total > 0 else 0
-    score = "Bullish" if pct > 60 else "Bearish" if pct < 40 else "Neutral"
+# Plotly gauge
+fig = go.Figure(go.Indicator(
+    mode="gauge+number",
+    value=bullish_pct,
+    title={"text": f"Overall USD Market Bias: {final_score}"},
+    gauge={
+        "axis": {"range": [0, 100]},
+        "bar": {"color": "#4CAF50" if final_score == "Bullish" else "#F44336"},
+        "steps": [
+            {"range": [0, 40], "color": "#F44336"},
+            {"range": [40, 60], "color": "#FFC107"},
+            {"range": [60, 100], "color": "#4CAF50"}
+        ]
+    }
+))
+st.plotly_chart(fig, use_container_width=True)
 
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=pct,
-        title={"text": f"{currency} Bias Score: {score}"},
-        gauge={"axis": {"range": [0, 100]},
-               "bar": {"color": "#4CAF50" if score == "Bullish" else "#F44336"},
-               "steps": [
-                   {"range": [0, 40], "color": "#F44336"},
-                   {"range": [40, 60], "color": "#FFC107"},
-                   {"range": [60, 100], "color": "#4CAF50"}
-               ]}
-    ))
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown(f"**Final Market Bias:** {score} based on latest World Bank data for {currency}")
-else:
-    st.warning("No data available.")
-
-conn.close()
-
+st.markdown(f"**Bullish Signals:** {bullish} | **Bearish Signals:** {bearish} | **Overall Bias:** {final_score}")
