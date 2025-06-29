@@ -15,7 +15,7 @@ COUNTRIES = {
     "AUD - Australia": "australia",
     "CHF - Switzerland": "switzerland"
 }
-API_KEY = "YOUR_TRADINGECONOMICS_API_KEY"
+API_KEY = "8e946d1b03ea43c:erihdh0hsy717b7"
 
 # --- FUNCTIONS ---
 def get_macro_data(country):
