@@ -1,4 +1,4 @@
-# Enhanced Streamlit Currency Bias Bot Dashboard with Charts, Selector, and Alerts
+# Streamlit Currency Bias Bot Using World Bank API (Free)
 
 import requests
 import pandas as pd
@@ -7,85 +7,67 @@ import plotly.express as px
 
 # --- SETTINGS ---
 COUNTRIES = {
-    "USD - United States": "united states",
-    "EUR - Euro Area": "euro area",
-    "JPY - Japan": "japan",
-    "GBP - United Kingdom": "united kingdom",
-    "CAD - Canada": "canada",
-    "AUD - Australia": "australia",
-    "CHF - Switzerland": "switzerland"
+    "USD - United States": "USA",
+    "EUR - Germany": "DEU",
+    "JPY - Japan": "JPN",
+    "GBP - United Kingdom": "GBR",
+    "CAD - Canada": "CAN",
+    "AUD - Australia": "AUS",
+    "CHF - Switzerland": "CHE"
 }
-API_KEY = "8e946d1b03ea43c:erihdh0hsy717b7"
+
+WORLD_BANK_INDICATORS = {
+    "NY.GDP.MKTP.CD": ("GDP (current US$)", 1),
+    "FP.CPI.TOTL.ZG": ("Inflation, consumer prices (annual %)", -1),
+    "SL.UEM.TOTL.ZS": ("Unemployment rate (% of labor force)", -1),
+    "NE.EXP.GNFS.CD": ("Exports of goods and services (current US$)", 1)
+}
 
 # --- FUNCTIONS ---
-def get_macro_data(country):
-    url = f"https://api.tradingeconomics.com/calendar/country/{country}?c={API_KEY}"
+def fetch_indicator(country_code, indicator_code):
+    url = f"http://api.worldbank.org/v2/country/{country_code}/indicator/{indicator_code}?format=json&per_page=10"
     response = requests.get(url)
     if response.status_code == 200:
-        return response.json()
-    else:
-        return []
+        data = response.json()
+        if len(data) > 1:
+            values = [d for d in data[1] if d['value'] is not None]
+            if len(values) >= 2:
+                return float(values[0]['value']), float(values[1]['value'])
+    return None, None
 
-def parse_and_score(data):
-    indicators = {
-        "GDP Growth Rate": 1,
-        "Unemployment Rate": -1,
-        "Inflation Rate": -1,
-        "Interest Rate": 1,
-        "Retail Sales": 1,
-        "Balance of Trade": 1,
-        "Consumer Confidence": 1
-    }
-
+def analyze_country(country_code):
     rows = []
     score = 0
 
-    for item in data:
-        indicator = item.get("Event")
-        actual = item.get("Actual")
-        previous = item.get("Previous")
-
-        if indicator in indicators and actual is not None and previous is not None:
-            try:
-                actual = float(actual)
-                previous = float(previous)
-                weight = indicators[indicator]
-                bias = "Bullish" if (actual > previous and weight > 0) or (actual < previous and weight < 0) else "Bearish"
-                score += weight if bias == "Bullish" else -weight
-                rows.append({"Indicator": indicator, "Actual": actual, "Previous": previous, "Bias": bias})
-            except:
-                continue
+    for code, (label, weight) in WORLD_BANK_INDICATORS.items():
+        latest, previous = fetch_indicator(country_code, code)
+        if latest is not None and previous is not None:
+            bias = "Bullish" if (latest > previous and weight > 0) or (latest < previous and weight < 0) else "Bearish"
+            score += weight if bias == "Bullish" else -weight
+            rows.append({"Indicator": label, "Latest": latest, "Previous": previous, "Bias": bias})
 
     bias_summary = "Bullish" if score > 0 else "Bearish" if score < 0 else "Neutral"
     return pd.DataFrame(rows), bias_summary, score
 
 # --- STREAMLIT APP ---
-st.set_page_config(page_title="Currency Macro Bias Dashboard", layout="wide")
-st.title("📊 Currency Macroeconomic Bias Bot")
+st.set_page_config(page_title="Currency Bias Bot (World Bank API)", layout="wide")
+st.title("🌍 Currency Macroeconomic Bias Bot (Free API)")
 
-st.markdown("""
-This tool fetches real macroeconomic data and assigns a bullish or bearish bias to currencies.
-Select a country/currency from the dropdown below to view live analysis.
-""")
+st.markdown("This version uses the free World Bank API for global macroeconomic indicators.")
 
-# Country selection
 selection = st.selectbox("Choose a Currency / Country:", list(COUNTRIES.keys()))
-country = COUNTRIES[selection]
+country_code = COUNTRIES[selection]
 currency = selection.split(" - ")[0]
 
-with st.spinner("Fetching macroeconomic data..."):
-    data = get_macro_data(country)
+with st.spinner("Fetching data from World Bank API..."):
+    table, summary, score = analyze_country(country_code)
 
-if not data:
-    st.error("Failed to fetch data. Check API key or internet connection.")
+if table.empty:
+    st.error("Failed to fetch or parse macroeconomic data.")
 else:
-    table, summary, score = parse_and_score(data)
-
-    # Table display
-    st.subheader(f"Macroeconomic Indicators for {currency}")
+    st.subheader(f"Indicators for {currency}")
     st.dataframe(table)
 
-    # Bias score gauge (simplified chart)
     st.subheader("📈 Bias Meter")
     fig = px.bar(
         x=["Bearish", "Neutral", "Bullish"],
@@ -95,16 +77,7 @@ else:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Summary text
     st.subheader(f"🧠 Final {currency} Bias: {summary}")
-    st.markdown(f"The overall macroeconomic outlook for **{currency}** based on the latest data is: **{summary}**.")
+    st.markdown(f"Based on GDP, inflation, unemployment, and exports — the {currency} is currently **{summary}**.")
 
-    # Email alert setup
-    with st.expander("📧 Set Up Email Alert (Optional)"):
-        email = st.text_input("Enter your email to get alerts when bias changes:")
-        if st.button("Save Alert"):
-            if email:
-                st.success(f"Alert setup for {currency} bias updates to {email} (placeholder logic).")
-            else:
-                st.warning("Please enter a valid email address.")
 
