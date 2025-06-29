@@ -1,185 +1,98 @@
-# Streamlit Live Economic Heatmap & Bias Tracker (Fixed Indentation)
+# Streamlit US Economic Heatmap (Live Data from Investing.com)
 
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
+import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
-import plotly.express as px
-import sqlite3
 import datetime
 
-# --- DATABASE SETUP ---
-DB_NAME = "macro_history.db"
-conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS macro_data (
-    region TEXT,
-    indicator TEXT,
-    date TEXT,
-    actual REAL,
-    forecast REAL,
-    previous REAL,
-    surprise REAL,
-    bias TEXT
-)''')
-conn.commit()
+st.set_page_config(layout="wide", page_title="US Economic Heatmap")
+st.title("🇺🇸 US Economic Heatmap | Live Data")
 
-# --- SUPPORTED REGIONS ---
-REGIONS = {"US": "USD", "EU": "EUR", "UK": "GBP", "JP": "JPY", "CA": "CAD"}
-
-# --- LIVE ECONOMIC CALENDAR SCRAPER ---
-def get_live_events():
+# --- FUNCTIONS ---
+def fetch_us_calendar():
+    """
+    Scrape Investing.com US economic calendar for today and returns DataFrame with actual, forecast, previous.
+    """
     url = 'https://www.investing.com/economic-calendar/'
     headers = {'User-Agent': 'Mozilla/5.0'}
     resp = requests.get(url, headers=headers)
     soup = BeautifulSoup(resp.text, 'html.parser')
-    table = soup.find('table', {'id': 'economicCalendarData'})
-    events = []
-    today = datetime.date.today().isoformat()
+    table = soup.find('table', {'id':'economicCalendarData'})
+    rows = []
+    today = datetime.date.today().strftime('%b %d, %y')
     if table and table.tbody:
-        for row in table.tbody.find_all('tr', attrs={'data-eventid': True}):
-            cells = row.find_all('td')
-            curr = cells[2].get_text(strip=True)
-            if curr not in REGIONS.values():
+        for tr in table.tbody.find_all('tr', attrs={'data-eventid': True}):
+            tds = tr.find_all('td')
+            region = tds[2].get_text(strip=True)
+            if region != 'USD':
                 continue
-            event = cells[3].get_text(strip=True)
-            actual = cells[4].get_text(strip=True) or None
-            forecast = cells[5].get_text(strip=True) or None
-            previous = cells[6].get_text(strip=True) or None
-            try:
-                actual_f = float(actual)
-                forecast_f = float(forecast)
-                previous_f = float(previous) if previous else None
-            except:
-                continue
-            surprise = round(actual_f - forecast_f, 2)
-            bias = 'Bullish' if surprise > 0 else 'Bearish' if surprise < 0 else 'Neutral'
-            region_key = next(k for k, v in REGIONS.items() if v == curr)
-            events.append({
-                'region': region_key,
-                'indicator': event,
-                'date': today,
-                'actual': actual_f,
-                'forecast': forecast_f,
-                'previous': previous_f,
-                'surprise': surprise,
-                'bias': bias
+            indicator = tds[3].get_text(strip=True)
+            date = tds[1].get_text(strip=True)
+            actual = tds[4].get_text(strip=True) or np.nan
+            forecast = tds[5].get_text(strip=True) or np.nan
+            previous = tds[6].get_text(strip=True) or np.nan
+            # convert values
+            def to_num(x):
+                try:
+                    return float(x.replace('%','').replace('K','').replace(',',''))
+                except:
+                    return np.nan
+            actual_n = to_num(actual)
+            forecast_n = to_num(forecast)
+            previous_n = to_num(previous)
+            surprise = actual_n - forecast_n if not np.isnan(actual_n) and not np.isnan(forecast_n) else np.nan
+            usd_impact = 'Bullish' if surprise>0 else 'Bearish' if surprise<0 else 'Neutral'
+            stocks_impact = usd_impact
+            rows.append({
+                'Indicator': indicator,
+                'Date': date,
+                'Surprise': f"{surprise:+.2f}" if not np.isnan(surprise) else '',
+                'Actual': actual,
+                'Forecast': forecast,
+                'Previous': previous,
+                'USD Impact': usd_impact,
+                'Stocks Impact': stocks_impact
             })
-    cols = ['region','indicator','date','actual','forecast','previous','surprise','bias']
-    return pd.DataFrame(events, columns=cols)
+    return pd.DataFrame(rows)
 
-# --- STREAMLIT APP ---
-st.set_page_config(layout="wide")
-st.title("🌐 Live Economic Heatmap & Bias Tracker")
-
-# Region selection
-region = st.selectbox(
-    "Select Region/Currency:",
-    list(REGIONS.keys()),
-    format_func=lambda x: f"{x} ({REGIONS[x]})"
-)
-
-# Fetch live data
-df_live = get_live_events()
-st.subheader("📅 Today's Economic Calendar")
-
-# Fallback to show most recent stored data
-
-def show_recent_from_db():
-    hist_all = pd.read_sql_query(
-        "SELECT * FROM macro_data WHERE region=? ORDER BY date DESC", conn,
-        params=(region,)
-    )
-    if hist_all.empty:
-        st.warning("No stored data available.")
-        return
-    hist_all['date'] = pd.to_datetime(hist_all['date'])
-    latest_date = hist_all['date'].max().date()
-    recent = hist_all[hist_all['date'].dt.date == latest_date]
-    st.subheader(f"Most Recent Data ({latest_date})")
-    st.dataframe(recent[['indicator','actual','forecast','previous','surprise','bias']])
-    counts = recent['bias'].value_counts()
-    overall = (
-        'Bullish' if counts.get('Bullish',0) > counts.get('Bearish',0)
-        else 'Bearish' if counts.get('Bearish',0) > counts.get('Bullish',0)
-        else 'Neutral'
-    )
-    st.markdown(f"## ⚖️ Overall Market Bias: **{overall}**")
-
-# Display live or fallback data
-if df_live.empty:
-    st.info("No live economic events could be fetched at this time. Showing most recent stored data.")
-    show_recent_from_db()
+# Fetch and display
+df = fetch_us_calendar()
+st.subheader("US Economic Calendar Today")
+if df.empty:
+    st.warning("No USD events found or unable to fetch data.")
 else:
-    sub = df_live[df_live['region'] == region]
-    if sub.empty:
-        st.info("No live events for this region today. Showing most recent stored data.")
-        show_recent_from_db()
-    else:
-        st.dataframe(sub[['indicator','actual','forecast','previous','surprise','bias']])
-        st.markdown("### 🧠 Event Bias Explanations")
-        for _, r in sub.iterrows():
-            st.markdown(
-                f"- **{r['indicator']}**: Actual {r['actual']} vs Forecast {r['forecast']} "
-                f"→ Surprise {r['surprise']} → **{r['bias']}**"
-            )
-        counts = sub['bias'].value_counts()
-        overall = (
-            'Bullish' if counts.get('Bullish',0) > counts.get('Bearish',0)
-            else 'Bearish' if counts.get('Bearish',0) > counts.get('Bullish',0)
-            else 'Neutral'
-        )
-        st.markdown(f"## ⚖️ Overall Market Bias: **{overall}**")
-        for _, r in sub.iterrows():
-            c.execute(
-                "INSERT INTO macro_data VALUES (?,?,?,?,?,?,?,?)",(
-                    region, r['indicator'], r['date'], r['actual'], r['forecast'],
-                    r['previous'], r['surprise'], r['bias']
-                )
-            )
-        conn.commit()
+    # style impact columns
+    def color_map(val):
+        if val=='Bullish': return 'background-color: #4a90e2; color:white'
+        if val=='Bearish': return 'background-color: #d0021b; color:white'
+        return ''
+    styled = df.style.applymap(color_map, subset=['USD Impact','Stocks Impact'])
+    st.dataframe(styled, use_container_width=True)
 
-# Historical data
-st.subheader("📈 Historical Records")
-hist = pd.read_sql_query(
-    "SELECT region, indicator, date, actual, forecast, previous, surprise FROM macro_data WHERE region=? ORDER BY date DESC", conn,
-    params=(region,)
-)
-hist['date'] = pd.to_datetime(hist['date'])
+    # Overall bias gauge
+    counts = df['USD Impact'].value_counts()
+    pct = counts.get('Bullish',0)/len(df)*100
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=pct,
+        title={'text':'USD Bullish %'},
+        gauge={'axis':{'range':[0,100]},
+               'bar':{'color':'#4a90e2'},
+               'steps':[
+                   {'range':[0,40],'color':'#d0021b'},
+                   {'range':[40,60],'color':'#9b9b9b'},
+                   {'range':[60,100],'color':'#4a90e2'}
+               ]}
+    ))
+    st.subheader("Overall USD Bias")
+    st.plotly_chart(fig, use_container_width=True)
 
-# Date filter input
-default_start = datetime.date.today() - datetime.timedelta(days=30)
-default_end = datetime.date.today()
-dates = st.date_input(
-    "Filter by date range:",
-    value=(default_start, default_end),
-    help="Select start and end dates"
-)
-if isinstance(dates, (list, tuple)) and len(dates) == 2:
-    start_date, end_date = dates
-else:
-    start_date = end_date = dates
+    # Explanations
+    st.subheader("Event Bias Explanations")
+    for _, r in df.iterrows():
+        st.markdown(f"- **{r['Indicator']}**: Surprise {r['Surprise']} → **{r['USD Impact']}**")
 
-filtered = hist[(hist['date'] >= pd.to_datetime(start_date)) & (hist['date'] <= pd.to_datetime(end_date))]
-st.dataframe(filtered)
-
-# Bias evolution chart
-st.markdown("### 📊 Bullish Bias % Over Time")
-time_df = (
-    hist.groupby(hist['date'].dt.date)['surprise']
-    .apply(lambda s: (s > 0).sum() / len(s) * 100)
-    .reset_index(name='bullish_pct')
-)
-fig_line = px.line(time_df, x='date', y='bullish_pct', title='Bullish Bias % Over Time')
-st.plotly_chart(fig_line, use_container_width=True)
-
-# CSV Export
-st.download_button(
-    label="Download Historical Data as CSV",
-    data=filtered.to_csv(index=False).encode('utf-8'),
-    file_name=f'{region}_history.csv',
-    mime='text/csv'
-)
-
-conn.close()
+# End
